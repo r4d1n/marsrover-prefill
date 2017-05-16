@@ -31,40 +31,40 @@ func main() {
 func fillCache() {
 	var wg sync.WaitGroup
 	rovers := []string{"curiosity", "opportunity", "spirit"}
-	mchan := make(chan []string)          // channel of rovers to get manifests
-	schan := make(chan reqTuple)          // channel of sols to make rate limited requests
-	limiter := time.Tick(time.Second * 4) // rate limiting ticker channel to stay under 1000 reqs / hr
+	mchan := make(chan string) // channel of rovers to get manifests
 	done := make(map[string]bool)
-	go func() { mchan <- rovers }()
-	for list := range mchan {
-		for _, r := range list {
-			if !done[r] {
-				done[r] = true
-				fmt.Println(r)
-				wg.Add(1)
-				go func(n string) {
-					defer wg.Done()
-					// get and cache most recent manifest per rover
-					manifest, err := updateManifest(n)
+	for _, craft := range rovers {
+		go func() { mchan <- craft }()
+	}
+	for r := range mchan {
+		if !done[r] {
+			done[r] = true
+			wg.Add(1)
+			go func(n string) {
+				defer wg.Done()
+				fmt.Printf("Beginning rover: %s \n", r)
+				// get and cache most recent manifest per rover
+				manifest, err := updateManifest(n)
+				if err != nil {
+					handleStatusError(err)
+				}
+				errchan := make(chan error)
+				limiter := time.Tick(time.Millisecond * 300) // rate limiting ticker channel
+				// add sols to channel to be fetched
+				for _, s := range manifest.Sols {
+					// range over channel and fetch sols with rate limit
+					<-limiter
+					go func() {
+						errchan <- cacheSol(n, s.Sol)
+					}()
+					err := <-errchan
 					if err != nil {
 						handleStatusError(err)
 					}
-					// add sols to channel to be fetched
-					for _, s := range manifest.Sols {
-						schan <- reqTuple{n, s.Sol}
-					}
-					// range over channel and fetch sols with rate limit
-					for req := range schan {
-						<-limiter
-						err := cacheSol(req.rover, req.sol)
-						if err != nil {
-							handleStatusError(err)
-						}
-					}
-					fmt.Printf("Completed rover: %s \n", n)
-					return
-				}(r)
-			}
+				}
+				fmt.Printf("Completed rover: %s \n", n)
+				return
+			}(r)
 			wg.Wait()
 			os.Exit(0)
 		}
@@ -96,7 +96,7 @@ func cacheSol(r string, s int) error {
 	defer conn.Close()
 	var data *marsrover.PhotoResponse
 	var j []byte
-	key := fmt.Sprintf("sol:%s:%d", r, s)
+	key := fmt.Sprintf("rover:%s:sol:%d", r, s)
 	if reply, _ := conn.Do("GET", key); reply != nil && reply != "null" {
 		fmt.Printf("%s is in the cache \n", key)
 		j = reply.([]byte)
@@ -118,8 +118,8 @@ func handleStatusError(err error) {
 	case *marsrover.StatusError:
 		if e.Status() == 429 {
 			// wait an hour for rate limit to expire to try again
-			log.Printf("Status %d. Exceeded Rate Limit. Waiting To Try Again... \n", e.Status())
-			time.Sleep(time.Hour)
+			log.Printf("Error %d: Exceeded Rate Limit. Waiting To Try Again... \n", e.Status())
+			time.Sleep(time.Minute)
 			fillCache()
 		} else {
 			log.Fatal(e)
