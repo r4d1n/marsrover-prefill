@@ -30,6 +30,7 @@ func fillCache() {
 	for _, rov := range rovers {
 		go func() { mchan <- rov }()
 	}
+	limiter := time.Tick(time.Millisecond * 1000) // rate limiting ticker channel
 	for _, r := range rovers {
 		fmt.Printf("Beginning rover: %s \n", r)
 		if !done[r] {
@@ -43,7 +44,6 @@ func fillCache() {
 					handleStatusError(err)
 				}
 				errchan := make(chan error)
-				limiter := time.Tick(time.Millisecond * 1000) // rate limiting ticker channel
 				// add sols to channel to be fetched
 				// for _, s := range manifest.Sols {
 				for i := len(manifest.Sols) - 1; i >= 0; i-- {
