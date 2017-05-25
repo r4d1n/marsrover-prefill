@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/garyburd/redigo/redis"
 	"github.com/r4d1n/marsrover"
 )
 
@@ -28,27 +30,41 @@ func fillCache() {
 	mchan := make(chan string) // channel of rovers to get manifests
 	done := make(map[string]bool)
 	for _, rov := range rovers {
-		go func() { mchan <- rov }()
+		go func(v string) { mchan <- v }(rov)
 	}
 	limiter := time.Tick(time.Millisecond * 1000) // rate limiting ticker channel
 	for _, r := range rovers {
-		fmt.Printf("Beginning rover: %s \n", r)
 		if !done[r] {
 			done[r] = true
 			wg.Add(1)
 			go func(n string) {
+				fmt.Printf("Beginning rover: %s \n", n)
 				defer wg.Done()
 				// get and cache most recent manifest per rover
 				manifest, err := cacheManifest(n)
+				sols := manifest.Sols
 				if err != nil {
 					handleStatusError(err)
 				}
 				errchan := make(chan error)
-				// add sols to channel to be fetched
-				// for _, s := range manifest.Sols {
-				for i := len(manifest.Sols) - 1; i >= 0; i-- {
-					s := manifest.Sols[i]
-					// range over channel and fetch sols with rate limit
+				conn := pool.Get()
+				defer conn.Close()
+				if reply, _ := conn.Do("GET", fmt.Sprintf("rover:%s:last_cached:sol", n)); reply != nil {
+					s, err := redis.String(reply, nil)
+					k, err := strconv.Atoi(s)
+					if err != nil {
+						log.Fatal(err)
+					}
+					fmt.Printf("rover:%s:last_cached:sol is %d -- will resume...\n", n, k)
+					for i, val := range manifest.Sols {
+						if val.Sol == k {
+							sols = sols[i:]
+							break
+						}
+					}
+				}
+				for _, s := range sols {
+					// fetch sol data with rate limit
 					<-limiter
 					go func() {
 						errchan <- cacheSol(n, s.Sol)
@@ -95,8 +111,6 @@ func cacheSol(r string, s int) error {
 	key := fmt.Sprintf("rover:%s:sol:%d", r, s)
 	if reply, _ := conn.Do("GET", key); reply != nil && string(reply.([]byte)) != "null" {
 		fmt.Printf("%s is in the cache \n", key)
-		j = reply.([]byte)
-		err = json.Unmarshal(j, data)
 	} else {
 		fmt.Printf("%s is NOT in the cache \n", key)
 		data, err = mars.GetImagesBySol(r, s)
@@ -114,6 +128,8 @@ func cacheSol(r string, s int) error {
 			}
 		}
 	}
+	// set last cached sol for this rover to start from same place next time
+	_, err = conn.Do("SET", fmt.Sprintf("rover:%s:last_cached:sol", r), s)
 	return nil
 }
 
@@ -122,7 +138,7 @@ func handleStatusError(err error) {
 	case *marsrover.StatusError:
 		if e.Status() == 429 {
 			// wait for rate limit to expire to try again
-			log.Printf("Error %d: Exceeded Rate Limit. Waiting To Try Again... \n", e.Status())
+			log.Printf("error %d: exceeded rate limit. waiting to try again...\n", e.Status())
 			time.Sleep(time.Minute * 30)
 			fillCache()
 		} else {
