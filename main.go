@@ -119,7 +119,7 @@ func cacheSol(r string, s int) error {
 		fmt.Printf("%s is NOT in the cache \n", key)
 		data, err = mars.GetImagesBySol(r, s)
 		j, err = json.Marshal(data)
-		if err != nil {
+		if err != nil || string(j) == "null" {
 			handleStatusError(err)
 		} else {
 			_, err = conn.Do("SET", key, j)
