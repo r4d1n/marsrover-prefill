@@ -1,4 +1,3 @@
-# ignore compiled binary
 marsrover-prefill
-
 .env
+dump.rdb

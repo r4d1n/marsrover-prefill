@@ -49,13 +49,13 @@ func fillCache() {
 				errchan := make(chan error)
 				conn := pool.Get()
 				defer conn.Close()
-				if reply, _ := conn.Do("GET", fmt.Sprintf("rover:%s:last_cached:sol", n)); reply != nil {
+				if reply, _ := conn.Do("GET", fmt.Sprintf("rover:%s:sol:last", n)); reply != nil {
 					s, err := redis.String(reply, nil)
 					k, err := strconv.Atoi(s)
 					if err != nil {
 						log.Fatal(err)
 					}
-					fmt.Printf("rover:%s:last_cached:sol is %d -- will resume...\n", n, k)
+					fmt.Printf("rover:%s:sol:last is %d -- will resume...\n", n, k)
 					for i, val := range manifest.Sols {
 						if val.Sol == k {
 							sols = sols[i:]
@@ -95,7 +95,11 @@ func cacheManifest(r string) (*marsrover.Manifest, error) {
 		return nil, err
 	}
 	j, err = json.Marshal(&data)
+	if err != nil {
+		return nil, err
+	}
 	_, err = conn.Do("SET", key, j)
+	_, err = conn.Do("EXPIRE", key, int(time.Hour*24))
 	if err != nil {
 		return nil, err
 	}
@@ -115,21 +119,17 @@ func cacheSol(r string, s int) error {
 		fmt.Printf("%s is NOT in the cache \n", key)
 		data, err = mars.GetImagesBySol(r, s)
 		j, err = json.Marshal(data)
-		if string(j) == "null" {
-			e := marsrover.StatusError{
-				Code: 429,
-				Msg:  "Exceeded rate limit",
-			}
-			handleStatusError(e)
+		if err != nil {
+			handleStatusError(err)
 		} else {
 			_, err = conn.Do("SET", key, j)
+			// set last cached sol for this rover to start from same place next time
+			_, err = conn.Do("SET", fmt.Sprintf("rover:%s:sol:last", r), s)
 			if err != nil {
 				return err
 			}
 		}
 	}
-	// set last cached sol for this rover to start from same place next time
-	_, err = conn.Do("SET", fmt.Sprintf("rover:%s:last_cached:sol", r), s)
 	return nil
 }
 
