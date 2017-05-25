@@ -58,7 +58,7 @@ func fillCache() {
 					fmt.Printf("rover:%s:sol:last is %d -- will resume...\n", n, k)
 					for i, val := range manifest.Sols {
 						if val.Sol == k {
-							sols = sols[i:]
+							sols = sols[i+1:]
 							break
 						}
 					}
